@@ -2,93 +2,118 @@ import telebot
 from telebot import types
 import requests
 import sqlite3
-from datetime import datetime, timedelta
-from transformers import pipeline
+from datetime import datetime
 
-API_TOKEN = 'YOUR_API_TOKEN'
+API_TOKEN = 'Token бота'
 bot = telebot.TeleBot(API_TOKEN)
+url = "https://yandex.ru/pogoda/nizhny-novgorod" #Зайдите на яндек погода (https://yandex.ru/pogoda) и выберите свой регион, после чего скопируйте ссылку и замениите
 
-summarizer = pipeline("summarization")
-
-conn = sqlite3.connect('temperature.db')
+# База данных
+conn = sqlite3.connect('weather_forecast.db', check_same_thread=False)
 cursor = conn.cursor()
-
 cursor.execute('''
-CREATE TABLE IF NOT EXISTS temperatures (
+CREATE TABLE IF NOT EXISTS forecast (
     date TEXT PRIMARY KEY,
-    temperature REAL
+    today_temp INTEGER,
+    tomorrow_temp INTEGER
 )
 ''')
 conn.commit()
 
-def fetch_weather_data(city):
-    api_key = 'YOUR_WEATHER_API_KEY'
-    url = f'http://api.openweathermap.org/data/2.5/forecast?q={city}&appid={api_key}&units=metric'
-    response = requests.get(url)
-    return response.json()
 
-def save_temperature(date, temperature):
-    cursor.execute('INSERT OR REPLACE INTO temperatures (date, temperature) VALUES (?, ?)', (date, temperature))
+def get_temp_from_yandex():
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        
+        r = requests.get(url, headers=headers, timeout=10)
+        html = r.text
+
+        temps = []
+        start = 0
+        while True:
+            start = html.find('temp__value', start)
+            if start == -1:
+                break
+            temp_start = html.find('>', start) + 1
+            temp_end = html.find('<', temp_start)
+            temp_str = html[temp_start:temp_end].strip().replace('−', '-')
+            try:
+                temps.append(int(temp_str))
+            except ValueError:
+                pass
+            start = temp_end
+
+        return (temps[0], temps[1]) if len(temps) >= 2 else (None, None)
+    except Exception as e:
+        print("Ошибка при парсинге:", e)
+        return (None, None)
+
+# Сохранение в базу
+def save_forecast(date, today, tomorrow):
+    cursor.execute('REPLACE INTO forecast (date, today_temp, tomorrow_temp) VALUES (?, ?, ?)', (date, today, tomorrow))
     conn.commit()
 
-def get_temperature(date):
-    cursor.execute('SELECT temperature FROM temperatures WHERE date = ?', (date,))
-    result = cursor.fetchone()
-    return result[0] if result else None
+# Предсказание
+def make_prediction(today, tomorrow):
+    if today is None or tomorrow is None:
+        return "⚠️ Не удалось получить температуру."
 
+    if tomorrow > today:
+        return f"🌤 Завтра потеплеет на {tomorrow - today}°C."
+    elif tomorrow < today:
+        return f"❄️ Завтра похолодает на {today - tomorrow}°C."
+    else:
+        return "🌡 Температура останется такой же."
+
+# Информация о глобальном потеплении
+def global_warming_info():
+    return ("🌍 Что такое глобальное потепление?\n"
+            "Глобальное потепление — это процесс увеличения средней температуры Земли. "
+            "Это явление вызвано увеличением концентрации парниковых газов, таких как углекислый газ (CO2), метан (CH4) и другие.\n\n"
+            "🌡 Причины глобального потепления:\n"
+            "1. Выбросы углекислого газа от сжигания ископаемого топлива.\n"
+            "2. Вырубка лесов, которые поглощают углекислый газ.\n"
+            "3. Индустриализация и другие человеческие деятельности.\n\n"
+            "🌿 Как сдерживать глобальное потепление?\n"
+            "1. Снижение выбросов парниковых газов.\n"
+            "2. Использование возобновляемых источников энергии.\n"
+            "3. Уменьшение потребления энергии и ресурсов.\n"
+            "4. Сохранение и восстановление экосистем.\n\n"
+            "💡 Полезные советы:\n"
+            "1. Экономьте электроэнергию и используйте энергоэффективные устройства.\n"
+            "2. Сортируйте отходы и перерабатывайте материалы.\n"
+            "3. Используйте общественный транспорт или ходите пешком.\n"
+            "4. Поддерживайте экологические инициативы и проекты.")
+
+# Команда /start
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    btn1 = types.KeyboardButton("Что такое глобальное потепление?")
-    btn2 = types.KeyboardButton("Как сдерживать потепление?")
-    btn3 = types.KeyboardButton("Полезные советы")
-    btn4 = types.KeyboardButton("Сводка с сайта")
-    btn5 = types.KeyboardButton("Температура в Кстово")
-    markup.add(btn1, btn2, btn3, btn4, btn5)
-    bot.send_message(message.chat.id, "Привет! Я бот, который помогает в борьбе с глобальным потеплением. Выберите интересующий вас вопрос:", reply_markup=markup)
+    markup.add("Прогноз в Нижнем", "Предсказание", "Глобальное потепление", "Полезные советы")
+    bot.send_message(message.chat.id, "Привет! Я бот, который умеет смотреть прогноз погоды и рассказывать о глобальном потеплении. Жми кнопку 👇", reply_markup=markup)
 
+# Обработка кнопок
 @bot.message_handler(func=lambda message: True)
-def handle_text(message):
-    if message.text == "Что такое глобальное потепление?":
-        bot.send_message(message.chat.id, "Глобальное потепление — это долгосрочное увеличение средней температуры Земли, вызванное человеческой деятельностью и природными факторами.")
-    elif message.text == "Как сдерживать потепление?":
-        bot.send_message(message.chat.id, "Можно сдерживать потепление, снижая выбросы парниковых газов, используя возобновляемые источники энергии и уменьшая потребление ресурсов.")
+def handle_message(message):
+    if message.text == "Прогноз в Нижнем":
+        today, tomorrow = get_temp_from_yandex()
+        if today is not None:
+            date = datetime.now().strftime('%Y-%m-%d')
+            save_forecast(date, today, tomorrow)
+            bot.send_message(message.chat.id, f"🌆 Сегодня в Н. Новгороде: {today}°C\n🔮 Завтра: {tomorrow}°C")
+        else:
+            bot.send_message(message.chat.id, "⚠️ Не получилось получить данные о погоде.")
+    elif message.text == "Предсказание":
+        today, tomorrow = get_temp_from_yandex()
+        prediction = make_prediction(today, tomorrow)
+        bot.send_message(message.chat.id, prediction)
+    elif message.text == "Глобальное потепление":
+        info = global_warming_info()
+        bot.send_message(message.chat.id, info)
     elif message.text == "Полезные советы":
-        bot.send_message(message.chat.id, "1. Экономьте электроэнергию.\n2. Используйте общественный транспорт.\n3. Сортируйте отходы.\n4. Поддерживайте экологические инициативы.")
-    elif message.text == "Сводка с сайта":
-        url = "https://www.un.org/ru/climatechange/science/causes-effects-climate-change"
-        data = fetch_data_from_website(url)
-        if data:
-            summary = summarizer(data, max_length=130, min_length=30, do_sample=False)
-            bot.send_message(message.chat.id, summary[0]['summary_text'])
-        else:
-            bot.send_message(message.chat.id, "Не удалось получить данные с сайта.")
-    elif message.text == "Температура в Кстово":
-        city = "Kstovo"
-        weather_data = fetch_weather_data(city)
-        if weather_data:
-            today = datetime.now().strftime('%Y-%m-%d')
-            yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
-            tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
-            year_ago = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
-
-            today_temp = weather_data['list'][0]['main']['temp']
-            tomorrow_temp = weather_data['list'][1]['main']['temp']
-
-            save_temperature(today, today_temp)
-            save_temperature(tomorrow, tomorrow_temp)
-
-            yesterday_temp = get_temperature(yesterday)
-            year_ago_temp = get_temperature(year_ago)
-
-            bot.send_message(message.chat.id, f"Температура в Кстово:\nСегодня: {today_temp}°C\nЗавтра: {tomorrow_temp}°C\nВчера: {yesterday_temp}°C\nГод назад: {year_ago_temp}°C")
-        else:
-            bot.send_message(message.chat.id, "Не удалось получить данные о погоде.")
+        bot.send_message(message.chat.id, "1. Экономьте электроэнергию.⚡\n2. Используйте общественный транспорт.🚌\n3. Сортируйте отходы.🚮\n4. Поддерживайте экологические инициативы.🌳")
     else:
-        bot.send_message(message.chat.id, "Извините, я не понимаю ваш запрос. Пожалуйста, выберите один из предложенных вариантов.")
+        bot.send_message(message.chat.id, "Выбери кнопку снизу 👇")
 
-@bot.message_handler(commands=['help'])
-def send_help(message):
-    bot.send_message(message.chat.id, "Этот бот помогает узнать больше о глобальном потеплении и способах его сдерживания. Используйте кнопки для навигации.")
-
+# Запуск
 bot.polling()
